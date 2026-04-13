@@ -146,10 +146,16 @@ def filter_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
     logger.info(f"Filter 3 (Min Salary): {count_salary} jobs remaining.")
 
     # --- Filter 4: Job Type ---
-    target_job_type = str(config.get('job_type', 'any')).lower()
+    target_job_type = str(config.get('job_type', 'any')).lower().replace('-', '').replace(' ', '')
     if target_job_type != 'any':
         if 'job_type' in df.columns:
-            df = df[df['job_type'].fillna('').str.lower() == target_job_type].copy()
+            def match_job_type(val):
+                if pd.isnull(val) or str(val).strip() == "":
+                    return True  # Permit if unknown
+                val_norm = str(val).lower().replace('-', '').replace(' ', '')
+                return val_norm == target_job_type
+            
+            df = df[df['job_type'].apply(match_job_type)].copy()
             
     count_type = len(df)
     logger.info(f"Filter 4 (Job Type): {count_type} jobs remaining.")

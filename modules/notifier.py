@@ -135,7 +135,7 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
                         <th>Company</th>
                         <th>Salary</th>
                         <th>Skills</th>
-                        <th>Score</th>
+                        <th>AI Match Score</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -160,7 +160,8 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
             skills_str = str(skills)
             
         # AI Score logic
-        score = job.get('ai_score', 0)
+        score = job.get('ai_match_score', 0)
+        reason = job.get('ai_match_reason', '')
         score_class = "score-low"
         if score > 80:
             score_class = "score-high"
@@ -171,7 +172,10 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
 
         html_content += f"""
                     <tr>
-                        <td><a href="{url}" class="job-title">{title}</a></td>
+                        <td>
+                            <a href="{url}" class="job-title">{title}</a><br>
+                            <span style="font-size: 11px; color: #666; font-style: italic;">{reason}</span>
+                        </td>
                         <td><div class="company">{company}</div></td>
                         <td><div class="salary">{salary_str}</div></td>
                         <td><div class="skills">{skills_str}</div></td>
@@ -294,12 +298,15 @@ def send_telegram_alert(jobs: pd.DataFrame, config: Dict[str, Any]):
         skills = job.get('matched_skills', [])
         skills_str = ", ".join(skills) if isinstance(skills, list) else str(skills)
         
+        score = job.get('ai_match_score', 0)
+        reason = job.get('ai_match_reason', '')
+        
         block = (
-            f"{idx}️⃣ *{title}*\n"
+            f"{idx}️⃣ *{title}* — 🎯 {int(score)}%\n"
             f"🏢 {company}\n"
             f"💰 {salary_str}\n"
             f"🔗 [Apply Here]({url})\n"
-            f"🎯 Skills: {skills_str}\n\n"
+            f"💡 _{reason}_\n\n"
         )
         job_blocks.append(block)
 

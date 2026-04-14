@@ -174,7 +174,7 @@ def filter_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
     df = sort_jobs(df)
     
     final_count = len(df)
-    logger.info(f"Filtered: {initial_count} jobs → {final_count} matching jobs.")
+    logger.info(f"Filtered: {initial_count} jobs -> {final_count} matching jobs.")
     
     return df
 

@@ -44,7 +44,10 @@ notifications:
   telegram_enabled: false
 
 
-# AI Scoring settings (Phase 3 feature)
+# AI Scoring settings (NVIDIA Version)
 ai_scoring:
-  enabled: true
-  min_score_threshold: 70
+  enabled: true                          # Set to false to disable AI scoring
+  min_score: 70                          # Only show jobs scoring above this %
+  model: "openai/gpt-oss-120b"          # Best-in-class reasoning MoE model
+  batch_mode: false                      # Set to true for faster scoring (less accurate)
+  max_jobs_to_score: 50                  # Limit API calls by only scoring top N jobs

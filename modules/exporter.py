@@ -2,7 +2,7 @@ import pandas as pd
 import os
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Set up logging for this module
 logger = logging.getLogger(__name__)
@@ -112,58 +112,37 @@ def display_terminal_summary(df: pd.DataFrame, top_n: int = 5):
         return
 
     print(f"\nTop {min(top_n, len(df))} Job Matches:")
-    table_divider = "-" * 110
-    print(table_divider)
     
-    # Simple table header
-    header = f"{'Title':<30} | {'Company':<20} | {'Salary Range':<20} | {'Score':<6} | {'URL'}"
-    print(header)
-    print(table_divider)
-
     # Sort by AI score if available, otherwise skill match count
-    sort_col = "ai_match_score" if "ai_match_score" in df.columns else "skill_match_count"
+    is_scored = "ai_match_score" in df.columns
+    sort_col = "ai_match_score" if is_scored else "skill_match_count"
     display_df = df.sort_values(by=sort_col, ascending=False).head(top_n)
 
-    for _, row in display_df.iterrows():
-        title = str(row.get('title', 'N/A'))[:28]
-        company = str(row.get('company', 'N/A'))[:18]
-        
-        # Format salary range
-        min_sal = row.get('min_amount')
-        max_sal = row.get('max_amount')
-        if pd.notnull(min_sal) and pd.notnull(max_sal):
-            salary = f"${int(min_sal/1000)}K - ${int(max_sal/1000)}K"
-        elif pd.notnull(min_sal):
-            salary = f"${int(min_sal/1000)}K+"
-        elif pd.notnull(max_sal):
-            salary = f"Up to ${int(max_sal/1000)}K"
-        else:
-            salary = "Not listed"
-            
-        score = row.get(sort_col, "N/A")
-        url = str(row.get('job_url', ''))[:50]
-        
-        print(f"{title:<30} | {company:<20} | {salary:<20} | {score:<6} | {url}")
+    # Box-style table (ASCII for compatibility)
+    print("+" + "-"*4 + "+" + "-"*7 + "+" + "-"*26 + "+" + "-"*16 + "+" + "-"*30 + "+")
+    print("|  # " + "| Score " + "| Title" + " "*20 + "| Company" + " "*8 + "| Why" + " "*27 + "|")
+    print("+" + "-"*4 + "+" + "-"*7 + "+" + "-"*26 + "+" + "-"*16 + "+" + "-"*30 + "+")
 
-    print(table_divider)
+    for i, (_, row) in enumerate(display_df.iterrows(), 1):
+        score_val = row.get(sort_col, 0)
+        score_str = f"{int(score_val)}%" if is_scored else f"{int(score_val)}"
+        title = str(row.get('title', 'N/A'))[:24]
+        company = str(row.get('company', 'N/A'))[:14]
+        # For non-scored, show skills match count
+        why = str(row.get('ai_match_reason' if is_scored else 'matched_skills', 'N/A'))[:28]
+        
+        print(f"| {i:<2} | {score_str:<5} | {title:<24} | {company:<14} | {why:<28} |")
+
+    print("+" + "-"*4 + "+" + "-"*7 + "+" + "-"*26 + "+" + "-"*16 + "+" + "-"*30 + "+")
     print(f"{divider}\n")
 
-def generate_run_summary(total_scraped: int, total_filtered: int, total_new: int, run_time_seconds: float) -> str:
+def generate_run_summary(total_scraped: int, total_filtered: int, total_new: int, run_time_seconds: float, ai_stats: Optional[Dict[str, Any]] = None) -> str:
     """
     Returns a formatted box summary string for reporting.
-    Uses ASCII characters for maximum compatibility.
-    
-    Args:
-        total_scraped (int): Jobs found before filtering.
-        total_filtered (int): Jobs remaining after filtering.
-        total_new (int): Jobs not already in history.
-        run_time_seconds (float): Execution time.
-        
-    Returns:
-        str: Multi-line summary string.
     """
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    divider = "="*40
+    divider = "======================================="
+    sep = "---------------------------------------"
     
     summary = f"""
 {divider}
@@ -172,7 +151,23 @@ JobBot Run Summary - {now}
 Jobs Scraped:    {total_scraped}
 Jobs Matched:     {total_filtered}
 New Jobs:         {total_new}
-Run Time:       {run_time_seconds:.1f} seconds
+{sep}
+"""
+    if ai_stats and ai_stats.get("enabled"):
+        model_name = ai_stats.get("model", "NVIDIA LLaMA").split("/")[-1]
+        summary += f"""AI Scoring:     [OK] Enabled ({model_name})
+Jobs Scored:    {ai_stats.get('total_scored')} ({ai_stats.get('cached')} from cache, {ai_stats.get('new')} new)
+Above {ai_stats.get('threshold', 70)}%:      {ai_stats.get('above_threshold')}
+Top Score:      {ai_stats.get('top_score')}% - "{ai_stats.get('top_job')}"
+Avg Score:      {ai_stats.get('avg_score')}%
+{sep}
+"""
+    else:
+        summary += f"""AI Scoring:     [OFF] Disabled/Skipped
+{sep}
+"""
+
+    summary += f"""Run Time:       {run_time_seconds:.1f} seconds
 {divider}
 """
     return summary.strip()

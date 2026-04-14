@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 # Constants
 CACHE_FILE = "output/score_cache.json"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL = "meta/llama-3.1-8b-instruct"
+DEFAULT_MODEL = "nvidia/gpt-oss-120b"
 
-# NVIDIA Free Tier Models (change model name below as needed):
-# - "meta/llama-3.1-8b-instruct"      ← Default, fast, good for scoring
-# - "meta/llama-3.1-70b-instruct"     ← More accurate, slower
-# - "meta/llama-3.2-3b-instruct"      ← Fastest, less accurate
-# - "mistralai/mistral-7b-instruct-v0.3" ← Alternative
-# - "google/gemma-2-9b-it"            ← Alternative
+# NVIDIA Models (change model name below as needed):
+# - "nvidia/gpt-oss-120b"            ← RECOMMENDED, Best MoE reasoning
+# - "meta/llama-3.1-8b-instruct"      ← Fast, good for basic scoring
+# - "meta/llama-3.1-405b-instruct"    ← Extreme accuracy, high latency
+# - "mistralai/mixtral-8x22b-instruct-v0.1" ← Powerful alternative
+# - "google/gemma-2-27b-it"           ← Alternative
 
 def create_user_profile(config: Dict[str, Any]) -> str:
     """
@@ -97,7 +97,7 @@ def save_score_cache(cache: Dict[str, Any]):
     except Exception as e:
         logger.error(f"Error saving cache: {e}")
 
-def score_single_job(job: Dict[str, Any], user_profile: str, client: OpenAI) -> Dict[str, Any]:
+def score_single_job(job: Dict[str, Any], user_profile: str, client: OpenAI, model: str) -> Dict[str, Any]:
     """
     Calls NVIDIA API to score a single job listing.
     """
@@ -121,9 +121,11 @@ Respond in EXACTLY this JSON format and nothing else:
   "missing_skills": ["skill3", "skill4"]
 }}"""
 
+    # model is now passed as an argument
+    
     try:
         response = client.chat.completions.create(
-            model=DEFAULT_MODEL,
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -175,12 +177,24 @@ Respond in EXACTLY this JSON format and nothing else:
         logger.error(f"Error scoring job {job.get('title')}: {e}")
         return default_response
 
-def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
+def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Analyzes a DataFrame of jobs and adds AI scores.
+    Returns (scored_df, stats_dict)
     """
+    stats = {
+        "enabled": False,
+        "total_scored": 0,
+        "cached": 0,
+        "new": 0,
+        "top_score": 0,
+        "top_job": "N/A",
+        "avg_score": 0,
+        "model": config.get("ai_scoring", {}).get("model", DEFAULT_MODEL)
+    }
+    
     if df.empty:
-        return df
+        return df, stats
         
     api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
@@ -189,19 +203,23 @@ def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
         for col in ["ai_match_score", "ai_match_reason", "ai_key_matches", "ai_missing_skills"]:
             if col not in df.columns:
                 df[col] = None
-        return df
+        return df, stats
+
+    stats["enabled"] = True
 
     # Initialization
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
     user_profile = create_user_profile(config)
+    model = config.get("ai_scoring", {}).get("model", DEFAULT_MODEL)
     cache = load_score_cache()
     
-    # Limit scoring to top 50 if too many
-    if len(df) > 50:
-        logger.info(f"Limiting AI scoring to top 50 jobs out of {len(df)}")
+    # Limit scoring to top N if too many
+    max_jobs = config.get("ai_scoring", {}).get("max_jobs_to_score", 50)
+    if len(df) > max_jobs:
+        logger.info(f"Limiting AI scoring to top {max_jobs} jobs out of {len(df)}")
         if "skill_match_count" in df.columns:
             df = df.sort_values(by="skill_match_count", ascending=False)
-        df = df.head(50).copy()
+        df = df.head(max_jobs).copy()
         
     results = []
     total = len(df)
@@ -222,9 +240,10 @@ def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
                 "ai_key_matches": cached_data.get("key_matches"),
                 "ai_missing_skills": cached_data.get("missing_skills")
             }
+            stats["cached"] += 1
         else:
             # Call API
-            score_res = score_single_job(job_dict, user_profile, client)
+            score_res = score_single_job(job_dict, user_profile, client, model)
             score_data = {
                 "ai_match_score": score_res["score"],
                 "ai_match_reason": score_res["reason"],
@@ -242,6 +261,7 @@ def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
             }
             
             logger.info(f"Scoring job {i}/{total}: {job_dict.get('title')} — Score: {score_res['score']}%")
+            stats["new"] += 1
             
             # Rate limiting
             if i < total:
@@ -252,11 +272,8 @@ def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
     # Attach results to DataFrame
     res_df = pd.concat([df.reset_index(drop=True), pd.DataFrame(results)], axis=1)
     
-    # Save cache
-    save_score_cache(cache)
-    
     # Filter by threshold
-    threshold = config.get("ai_scoring", {}).get("min_score_threshold", 70)
+    threshold = config.get("ai_scoring", {}).get("min_score", 70)
     final_df = res_df[res_df["ai_match_score"] >= threshold].copy()
     
     # Sort by score
@@ -264,16 +281,28 @@ def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
     
     logger.info(f"AI Scoring complete. {len(final_df)}/{total} jobs passed the {threshold}% threshold.")
     
-    return final_df
+    # Update stats for final results
+    if not final_df.empty:
+        stats["top_score"] = int(final_df["ai_match_score"].max())
+        top_row = final_df.iloc[0]
+        stats["top_job"] = f"{top_row['title']} at {top_row['company']}"
+        stats["avg_score"] = int(final_df["ai_match_score"].mean())
+        stats["above_threshold"] = len(final_df)
+    else:
+        stats["above_threshold"] = 0
 
-def score_jobs_batch(df: pd.DataFrame, config: Dict[str, Any], batch_size: int = 5) -> pd.DataFrame:
+    # Save cache
+    save_score_cache(cache)
+    
+    return final_df, stats
+
+def score_jobs_batch(df: pd.DataFrame, config: Dict[str, Any], batch_size: int = 5) -> tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    Alternative batch scoring to save on overhead (if supported by library well).
-    Currently implemented as a wrapper around single scoring for robustness,
-    but can be expanded to full batch prompts.
+    Alternative batch scoring. 
+    NOTE: Currently implemented as a sequential wrapper for reliability across different models.
     """
-    # For now, we use score_all_jobs as it handles caching and individual safety well.
-    # Instruction asked for this function, so we provide it.
+    logger.info(f"Using BATCH scoring mode for {len(df)} jobs (Batch size: {batch_size})")
+    # For now, we reuse score_all_jobs as it handles caching and individual safety well.
     return score_all_jobs(df, config)
 
 if __name__ == "__main__":

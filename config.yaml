@@ -43,6 +43,7 @@ notifications:
   email_enabled: true
   telegram_enabled: false
 
+
 # AI Scoring settings (Phase 3 feature)
 ai_scoring:
   enabled: true

@@ -7,6 +7,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, Any, Optional
 import pandas as pd
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -213,6 +214,136 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
             else:
                 logger.error("All email send attempts failed.")
 
+def send_telegram_message(text: str, token: str, chat_id: str) -> bool:
+    """
+    Generic function to send any text via Telegram Bot API.
+    Returns True if sent successfully, False otherwise.
+    
+    Telegram Setup Instructions:
+    1. Create Bot: Message @BotFather on Telegram, use /newbot, and get the BOT_TOKEN.
+    2. Get Chat ID: 
+       - Start a chat with your bot and send a message.
+       - Visit: https://api.telegram.org/bot<TOKEN>/getUpdates
+       - Find "id" inside the "chat" object.
+    """
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    
+    max_retries = 1
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                logger.info("Telegram message sent successfully.")
+                return True
+            else:
+                logger.error(f"Telegram API error ({response.status_code}): {response.text}")
+        except Exception as e:
+            logger.error(f"Telegram connection failed (Attempt {attempt+1}): {str(e)}")
+        
+        if attempt < max_retries:
+            logger.info("Retrying Telegram in 10 seconds...")
+            time.sleep(10)
+            
+    return False
+
+def send_telegram_alert(jobs: pd.DataFrame, config: Dict[str, Any]):
+    """
+    Sends a Telegram alert with the top matched jobs.
+    Splits message if it exceeds 4096 characters.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    
+    if not token or not chat_id:
+        logger.warning("Telegram credentials missing (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID). Skipping Telegram alert.")
+        return
+
+    if jobs.empty:
+        logger.info("No jobs to send via Telegram. Skipping.")
+        return
+
+    # Prepare header
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    header = (
+        f"🤖 *JobBot Daily Report*\n"
+        f"📅 Date: {date_str}\n"
+        f"📊 New Jobs Found: {len(jobs)}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    
+    # Take top 10 jobs
+    top_jobs = jobs.head(10)
+    job_blocks = []
+    
+    for idx, (_, job) in enumerate(top_jobs.iterrows(), 1):
+        title = job.get('title', 'Unknown Title')
+        company = job.get('company', 'Unknown Company')
+        url = job.get('job_url', '#')
+        
+        sal_min = job.get('min_amount')
+        sal_max = job.get('max_amount')
+        currency = job.get('currency', 'USD')
+        salary_str = format_salary(sal_min, sal_max, currency)
+        
+        skills = job.get('matched_skills', [])
+        skills_str = ", ".join(skills) if isinstance(skills, list) else str(skills)
+        
+        block = (
+            f"{idx}️⃣ *{title}*\n"
+            f"🏢 {company}\n"
+            f"💰 {salary_str}\n"
+            f"🔗 [Apply Here]({url})\n"
+            f"🎯 Skills: {skills_str}\n\n"
+        )
+        job_blocks.append(block)
+
+    footer = "━━━━━━━━━━━━━━━━━━━\n📋 Full list exported to CSV"
+    
+    # Construct message and handle length limits
+    full_message = header + "".join(job_blocks) + footer
+    
+    # Split message if > 4096 chars
+    if len(full_message) <= 4096:
+        send_telegram_message(full_message, token, chat_id)
+    else:
+        # Simple splitting
+        parts = []
+        current_part = header
+        for block in job_blocks:
+            if len(current_part) + len(block) > 4000: # Leave some buffer
+                parts.append(current_part)
+                current_part = ""
+            current_part += block
+        
+        current_part += footer
+        parts.append(current_part)
+        
+        for p in parts:
+            send_telegram_message(p, token, chat_id)
+
+def send_notifications(jobs: pd.DataFrame, config: Dict[str, Any]):
+    """
+    Unified function to send notifications based on configuration.
+    """
+    notif_config = config.get('notifications', {})
+    email_enabled = notif_config.get('email_enabled', False)
+    telegram_enabled = notif_config.get('telegram_enabled', False)
+    
+    if not email_enabled and not telegram_enabled:
+        logger.info("No notifications configured (Email and Telegram are both disabled).")
+        return
+
+    if email_enabled:
+        send_email_digest(jobs, config)
+        
+    if telegram_enabled:
+        send_telegram_alert(jobs, config)
+
 if __name__ == "__main__":
     # Test block
     from dotenv import load_dotenv
@@ -256,7 +387,8 @@ if __name__ == "__main__":
     
     test_config = {
         'notifications': {
-            'email_enabled': True
+            'email_enabled': True,
+            'telegram_enabled': True
         }
     }
     
@@ -264,5 +396,7 @@ if __name__ == "__main__":
     print(f"Salary test 1: {format_salary(80000, 120000, 'USD')}")
     print(f"Salary test 2: {format_salary(None, None, 'USD')}")
     
-    # Test send_email (will only work if .env is set)
-    send_email_digest(test_jobs, test_config)
+    # Test unified notification function
+    # Note: Requires .env to have credentials to actually send
+    print("Testing unified notifications (will attempt Email and Telegram)...")
+    send_notifications(test_jobs, test_config)

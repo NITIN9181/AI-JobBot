@@ -9,8 +9,9 @@ from config import get_config
 from modules.scraper import scrape_all_jobs
 from modules.filter_engine import filter_jobs, remove_duplicates
 from modules.deduplicator import deduplicate_with_history
-from modules.exporter import export_to_csv, export_latest_csv, display_terminal_summary
+from modules.exporter import export_to_csv, export_latest_csv, display_terminal_summary, generate_run_summary
 from modules.scheduler import log_run, run_once_now, start_scheduler
+from modules.notifier import send_notifications, send_email_digest, send_telegram_message
 
 # Set up logging
 logger = logging.getLogger("JobBot.Main")
@@ -32,6 +33,7 @@ def run_job_search(test_mode: bool = False):
     Args:
         test_mode: If True, limit the number of results per site to 5.
     """
+    start_time = datetime.now()
     try:
         # Step 1 — Load Config
         config = get_config()
@@ -67,8 +69,36 @@ def run_job_search(test_mode: bool = False):
         else:
             logger.info("No new jobs to export.")
 
-        # Step 6 — Log Run
+        # Step 6 — Send Notifications
+        notif_summary = ""
+        if not new_jobs.empty:
+            try:
+                logger.info("Sending notifications...")
+                notif_results = send_notifications(new_jobs, config)
+                
+                # Format notification summary string
+                email_status = "✅ Email sent" if notif_results.get("email_sent") else ("⚠️ Email disabled" if not notif_results.get("email_enabled") else "❌ Email failed")
+                tg_status = "✅ Telegram sent" if notif_results.get("telegram_sent") else ("⚠️ Telegram disabled" if not notif_results.get("telegram_enabled") else "❌ Telegram failed")
+                notif_summary = f"Notifications:  {email_status} | {tg_status}"
+                
+                logger.info("Notifications processed")
+                print(f"\n{notif_summary}")
+            except Exception as ne:
+                logger.error(f"Notification error: {ne}")
+                notif_summary = "Notifications:  ❌ Failed (Error)"
+        else:
+            logger.info("No new jobs to notify about")
+            notif_summary = "Notifications:  Skipped (No new jobs)"
+
+        # Step 7 — Log Run
+        elapsed = (datetime.now() - start_time).total_seconds()
         log_run("success", len(raw_jobs), len(new_jobs))
+        
+        # Display final box summary if not empty
+        if not new_jobs.empty:
+            summary_box = generate_run_summary(len(raw_jobs), len(filtered_jobs), len(new_jobs), elapsed)
+            print(f"\n{summary_box}")
+            print(notif_summary)
         
     except Exception as e:
         error_msg = f"Error during job search: {str(e)}"
@@ -85,6 +115,8 @@ def main():
     parser.add_argument("--now", action="store_true", help="Run the job search immediately once")
     parser.add_argument("--schedule", action="store_true", help="Start the daily scheduler")
     parser.add_argument("--test", action="store_true", help="Run with test config (only 5 results per site)")
+    parser.add_argument("--test-email", action="store_true", help="Send a test email with dummy data")
+    parser.add_argument("--test-telegram", action="store_true", help="Send a test Telegram message")
     
     args = parser.parse_args()
     
@@ -97,6 +129,30 @@ def main():
         config = get_config()
         run_time = config.get("scheduler_time", "09:00")
         start_scheduler(lambda: run_job_search(), run_time=run_time)
+    elif args.test_email:
+        config = get_config()
+        print("Sending test email...")
+        import pandas as pd
+        dummy_jobs = pd.DataFrame([
+            {'title': 'Test Job 1', 'company': 'Test Co', 'job_url': 'https://google.com', 'min_amount': 100000, 'max_amount': 150000, 'currency': 'USD', 'matched_skills': ['python'], 'ai_score': 95},
+            {'title': 'Test Job 2', 'company': 'Test Inc', 'job_url': 'https://google.com', 'min_amount': 80000, 'max_amount': 100000, 'currency': 'USD', 'matched_skills': ['java'], 'ai_score': 75},
+            {'title': 'Test Job 3', 'company': 'Test Ltd', 'job_url': 'https://google.com', 'min_amount': None, 'max_amount': None, 'currency': 'USD', 'matched_skills': ['c++'], 'ai_score': 55}
+        ])
+        success = send_email_digest(dummy_jobs, config)
+        print(f"Test email {'sent successfully!' if success else 'failed. Check logs.'}")
+        
+    elif args.test_telegram:
+        config = get_config()
+        print("Sending test Telegram message...")
+        import os
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat_id:
+            print("❌ Error: Telegram credentials missing in .env")
+        else:
+            success = send_telegram_message("🤖 JobBot Telegram test — connection successful!", token, chat_id)
+            print(f"Test message {'sent successfully!' if success else 'failed. Check logs.'}")
+            
     elif args.now:
         run_once_now(lambda: run_job_search())
     else:

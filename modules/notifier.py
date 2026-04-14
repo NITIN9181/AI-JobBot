@@ -63,11 +63,11 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
     
     if not gmail_address or not gmail_app_password:
         logger.warning("Email credentials missing (GMAIL_ADDRESS/GMAIL_APP_PASSWORD). Skipping email digest.")
-        return
+        return False
 
     if jobs.empty:
         logger.info("No jobs to send in digest. Skipping email.")
-        return
+        return False
 
     # Take top 20 jobs
     top_jobs = jobs.head(20).copy()
@@ -205,7 +205,7 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
                 server.login(gmail_address, gmail_app_password)
                 server.send_message(msg)
                 logger.info(f"Email digest sent successfully to {gmail_address}")
-                return # Success
+                return True # Success
         except Exception as e:
             logger.error(f"Failed to send email on attempt {attempt + 1}: {str(e)}")
             if attempt < max_retries:
@@ -213,6 +213,7 @@ def send_email_digest(jobs: pd.DataFrame, config: Dict[str, Any]):
                 time.sleep(30)
             else:
                 logger.error("All email send attempts failed.")
+                return False
 
 def send_telegram_message(text: str, token: str, chat_id: str) -> bool:
     """
@@ -261,11 +262,11 @@ def send_telegram_alert(jobs: pd.DataFrame, config: Dict[str, Any]):
     
     if not token or not chat_id:
         logger.warning("Telegram credentials missing (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID). Skipping Telegram alert.")
-        return
+        return False
 
     if jobs.empty:
         logger.info("No jobs to send via Telegram. Skipping.")
-        return
+        return False
 
     # Prepare header
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -309,7 +310,7 @@ def send_telegram_alert(jobs: pd.DataFrame, config: Dict[str, Any]):
     
     # Split message if > 4096 chars
     if len(full_message) <= 4096:
-        send_telegram_message(full_message, token, chat_id)
+        return send_telegram_message(full_message, token, chat_id)
     else:
         # Simple splitting
         parts = []
@@ -323,26 +324,35 @@ def send_telegram_alert(jobs: pd.DataFrame, config: Dict[str, Any]):
         current_part += footer
         parts.append(current_part)
         
+        success = True
         for p in parts:
-            send_telegram_message(p, token, chat_id)
+            if not send_telegram_message(p, token, chat_id):
+                success = False
+        return success
 
 def send_notifications(jobs: pd.DataFrame, config: Dict[str, Any]):
-    """
-    Unified function to send notifications based on configuration.
-    """
     notif_config = config.get('notifications', {})
     email_enabled = notif_config.get('email_enabled', False)
     telegram_enabled = notif_config.get('telegram_enabled', False)
     
+    results = {
+        "email_enabled": email_enabled,
+        "telegram_enabled": telegram_enabled,
+        "email_sent": False,
+        "telegram_sent": False
+    }
+    
     if not email_enabled and not telegram_enabled:
         logger.info("No notifications configured (Email and Telegram are both disabled).")
-        return
+        return results
 
     if email_enabled:
-        send_email_digest(jobs, config)
+        results["email_sent"] = send_email_digest(jobs, config)
         
     if telegram_enabled:
-        send_telegram_alert(jobs, config)
+        results["telegram_sent"] = send_telegram_alert(jobs, config)
+        
+    return results
 
 if __name__ == "__main__":
     # Test block

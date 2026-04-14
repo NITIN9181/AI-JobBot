@@ -4,7 +4,12 @@ import os
 import sys
 import traceback
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
+import io
+
+# Force UTF-8 encoding for Windows terminal compatibility
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from config import get_config
 from modules.scraper import scrape_all_jobs
@@ -13,7 +18,8 @@ from modules.deduplicator import deduplicate_with_history
 from modules.exporter import (
     export_to_csv, export_latest_csv, 
     display_terminal_summary, generate_run_summary,
-    export_to_google_sheets
+    export_to_google_sheets, setup_google_sheets,
+    get_application_stats, display_application_stats
 )
 from modules.scheduler import log_run, run_once_now, start_scheduler
 from modules.notifier import send_notifications, send_email_digest, send_telegram_message
@@ -97,37 +103,50 @@ def run_job_search(test_mode: bool = False):
                 logger.info(f"AI scored {ai_stats['total_scored']} jobs. Top score: {ai_stats['top_score']}%")
                 logger.info(f"Model used: {ai_stats['model']} via NVIDIA API")
                 ai_stats["threshold"] = config.get("ai_scoring", {}).get("min_score", 70)
+            
+            # Define top matches for notifications
+            threshold = config.get("ai_scoring", {}).get("min_score", 70)
+            top_matches = new_jobs[new_jobs["ai_match_score"] >= threshold].copy()
+            logger.info(f"AI scored {len(new_jobs)} jobs. {len(top_matches)} passed the threshold ({threshold}%).")
         elif not new_jobs.empty:
             logger.info("AI scoring skipped.")
+            top_matches = new_jobs.copy()
+        else:
+            top_matches = new_jobs.copy()
 
         # Step 5 — Export Results
+        gs_status = None
         if not new_jobs.empty:
             export_to_csv(new_jobs)
             export_latest_csv(new_jobs)
-            export_to_google_sheets(new_jobs, config)
+            
+            # Google Sheets Export (Phase 4.2 Update)
+            logger.info("Step 5b: Exporting to Google Sheets tracker...")
+            gs_status = export_to_google_sheets(new_jobs, config)
+            
             display_terminal_summary(new_jobs)
         else:
             logger.info("No new jobs to export.")
 
         # Step 6 — Send Notifications
         notif_summary = ""
-        if not new_jobs.empty:
+        if not top_matches.empty:
             try:
-                logger.info("Sending notifications...")
-                notif_results = send_notifications(new_jobs, config)
+                logger.info(f"Step 6: Sending notifications for {len(top_matches)} top matches...")
+                notif_results = send_notifications(top_matches, config)
                 
                 # Format notification summary string
-                email_status = "✅ Email sent" if notif_results.get("email_sent") else ("⚠️ Email disabled" if not notif_results.get("email_enabled") else "❌ Email failed")
-                tg_status = "✅ Telegram sent" if notif_results.get("telegram_sent") else ("⚠️ Telegram disabled" if not notif_results.get("telegram_enabled") else "❌ Telegram failed")
+                email_status = "[OK] Email sent" if notif_results.get("email_sent") else ("[--] Email disabled" if not notif_results.get("email_enabled") else "[!!] Email failed")
+                tg_status = "[OK] Telegram sent" if notif_results.get("telegram_sent") else ("[--] Telegram disabled" if not notif_results.get("telegram_enabled") else "[!!] Telegram failed")
                 notif_summary = f"Notifications:  {email_status} | {tg_status}"
                 
                 logger.info("Notifications processed")
                 print(f"\n{notif_summary}")
             except Exception as ne:
                 logger.error(f"Notification error: {ne}")
-                notif_summary = "Notifications:  ❌ Failed (Error)"
+                notif_summary = "Notifications:  [XX] Failed (Error)"
         else:
-            logger.info("No new jobs to notify about")
+            logger.info("No top matches to notify about")
             notif_summary = "Notifications:  Skipped (No new jobs)"
 
         # Step 7 — Log Run
@@ -136,7 +155,7 @@ def run_job_search(test_mode: bool = False):
         
         # Display final box summary if not empty
         if not new_jobs.empty:
-            summary_box = generate_run_summary(len(raw_jobs), len(filtered_jobs), len(new_jobs), elapsed, ai_stats)
+            summary_box = generate_run_summary(len(raw_jobs), len(filtered_jobs), len(new_jobs), elapsed, ai_stats, gs_status)
             print(f"\n{summary_box}")
             print(notif_summary)
         
@@ -160,6 +179,7 @@ def main():
     parser.add_argument("--no-ai", action="store_true", help="Skip AI scoring even if enabled in config")
     parser.add_argument("--batch-ai", action="store_true", help="Use batch scoring mode (faster)")
     parser.add_argument("--rescore", action="store_true", help="Clear the score cache and re-score all jobs fresh")
+    parser.add_argument("--stats", action="store_true", help="Show application tracking statistics from Google Sheets")
     
     args = parser.parse_args()
     
@@ -202,11 +222,27 @@ def main():
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not token or not chat_id:
-            print("❌ Error: Telegram credentials missing in .env")
+            print("[!!] Error: Telegram credentials missing in .env")
         else:
-            success = send_telegram_message("🤖 JobBot Telegram test — connection successful!", token, chat_id)
+            success = send_telegram_message("JobBot Telegram test - connection successful!", token, chat_id)
             print(f"Test message {'sent successfully!' if success else 'failed. Check logs.'}")
             
+    elif args.stats:
+        config = get_config()
+        sheet_name = os.getenv("GOOGLE_SHEET_NAME", "JobBot_Output")
+        
+        print(f"[*] Fetching stats from Google Sheet: '{sheet_name}'...")
+        spreadsheet, worksheet = setup_google_sheets(sheet_name)
+        
+        if spreadsheet and worksheet:
+            try:
+                stats = get_application_stats(worksheet)
+                display_application_stats(stats)
+            except Exception as e:
+                print(f"[!!] Error: Could not fetch stats. {e}")
+        else:
+            print("[!!] Error: Could not connect to Google Sheets. Check your credentials and .env")
+
     elif args.now:
         run_once_now(lambda: run_job_search())
     else:

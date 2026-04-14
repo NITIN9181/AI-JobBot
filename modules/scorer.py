@@ -270,16 +270,15 @@ def score_all_jobs(df: pd.DataFrame, config: Dict[str, Any]) -> tuple[pd.DataFra
         results.append(score_data)
 
     # Attach results to DataFrame
-    res_df = pd.concat([df.reset_index(drop=True), pd.DataFrame(results)], axis=1)
-    
-    # Filter by threshold
-    threshold = config.get("ai_scoring", {}).get("min_score", 70)
-    final_df = res_df[res_df["ai_match_score"] >= threshold].copy()
+    final_df = pd.concat([df.reset_index(drop=True), pd.DataFrame(results)], axis=1)
     
     # Sort by score
     final_df = final_df.sort_values(by="ai_match_score", ascending=False)
     
-    logger.info(f"AI Scoring complete. {len(final_df)}/{total} jobs passed the {threshold}% threshold.")
+    threshold = config.get("ai_scoring", {}).get("min_score", 70)
+    above_threshold_count = len(final_df[final_df["ai_match_score"] >= threshold])
+    
+    logger.info(f"AI Scoring complete. {above_threshold_count}/{total} jobs passed the {threshold}% threshold.")
     
     # Update stats for final results
     if not final_df.empty:

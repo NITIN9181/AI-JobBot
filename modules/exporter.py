@@ -43,33 +43,33 @@ def setup_google_sheets(cred_file: str, sheet_name: str) -> Optional["gspread.Sp
     """
     Authenticates with Google Sheets and opens the specified spreadsheet.
     """
-    if not GSHEETS_AVAILABLE:
-        logger.warning("gspread or oauth2client not installed. Skipping Google Sheets integration.")
-        return None
-
+def setup_google_sheets(sheet_name: str) -> tuple[Optional[gspread.Spreadsheet], Optional[gspread.Worksheet]]:
+    """
+    Connects to Google Sheets and ensures the 'Job Listings' worksheet exists.
+    """
+    cred_file = os.getenv("GOOGLE_SHEETS_CRED_FILE", "credentials.json")
     if not os.path.exists(cred_file):
-        logger.warning(f"Google credentials file not found: {cred_file}. Skipping Google Sheets integration.")
-        print(f"\n[WARNING] Google Sheets credentials ('{cred_file}') missing.")
-        print("To enable Google Sheets export, follow the setup instructions in modules/exporter.py\n")
-        return None
+        logger.warning(f"Google credentials file '{cred_file}' not found.")
+        return None, None
 
     try:
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name(cred_file, scope)
         client = gspread.authorize(creds)
         
         spreadsheet = client.open(sheet_name)
-        logger.info(f"Connected to Google Sheet: {sheet_name}")
-        return spreadsheet
-    except gspread.SpreadsheetNotFound:
-        logger.error(f"Spreadsheet '{sheet_name}' not found. Ensure it exists and is shared with the service account email.")
-        return None
+        
+        try:
+            worksheet = spreadsheet.worksheet("Job Listings")
+        except gspread.WorksheetNotFound:
+            logger.info("Worksheet 'Job Listings' not found. Creating it now...")
+            worksheet = spreadsheet.add_worksheet(title="Job Listings", rows="1000", cols="20")
+            # Headers will be added during first export
+            
+        return spreadsheet, worksheet
     except Exception as e:
-        logger.error(f"Failed to connect to Google Sheets: {e}")
-        return None
+        logger.error(f"Error connecting to Google Sheets: {e}")
+        return None, None
 
 def check_sheet_duplicates(worksheet, job_url: str) -> bool:
     """
@@ -172,35 +172,56 @@ def get_application_stats(worksheet) -> dict:
     
     return stats
 
-def export_to_google_sheets(df: pd.DataFrame, config: dict):
+def display_application_stats(stats: dict):
+    """
+    Prints a premium ASCII box with application statistics.
+    """
+    total = stats.get("total", 0)
+    not_applied = stats.get("not_applied", 0)
+    applied = stats.get("applied", 0)
+    interview = stats.get("interview", 0)
+    rejected = stats.get("rejected", 0)
+    offer = stats.get("offer", 0)
+    
+    # Calculate response rate (Interviews / Applied)
+    response_rate = (interview / applied * 100) if applied > 0 else 0
+    
+    print("\n╔════════════════════════════════════╗")
+    print("║      Application Tracker Stats     ║")
+    print("╠════════════════════════════════════╣")
+    print(f"║  Total Jobs Found:        {total:<8} ║")
+    print(f"║  Not Applied:             {not_applied:<8} ║")
+    print(f"║  Applied:                  {applied:<8} ║")
+    print(f"║  Interview Stage:          {interview:<8} ║")
+    print(f"║  Rejected:                  {rejected:<8} ║")
+    print(f"║  Offers:                    {offer:<8} ║")
+    print(f"║  Response Rate:          {response_rate:>5.1f}%    ║")
+    print("╚════════════════════════════════════╝\n")
+
+def export_to_google_sheets(df: pd.DataFrame, config: dict) -> Dict[str, Any]:
     """
     Connects to Google Sheets and appends new jobs.
+    Returns status info: {"success": bool, "url": str, "count": int}
     """
+    status = {"success": False, "url": "", "count": 0}
+    
     if df.empty:
-        return
+        return status
 
-    cred_file = os.getenv("GOOGLE_SHEETS_CRED_FILE", "credentials.json")
     sheet_name = os.getenv("GOOGLE_SHEET_NAME", "JobBot_Output")
 
-    spreadsheet = setup_google_sheets(cred_file, sheet_name)
-    if not spreadsheet:
-        return
+    spreadsheet, worksheet = setup_google_sheets(sheet_name)
+    if not spreadsheet or not worksheet:
+        return status
+    
+    status["url"] = spreadsheet.url
 
     try:
-        # Open or create "Job Listings" worksheet
-        try:
-            worksheet = spreadsheet.worksheet("Job Listings")
-        except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title="Job Listings", rows="1000", cols="20")
-            # Set headers
+        # Verify headers or create if empty
+        existing_values = worksheet.get_all_values()
+        if not existing_values:
             headers = ["Date Found", "Title", "Company", "Location", "Salary Range", "Job Type", "Skills Matched", "AI Score", "AI Reason", "Job URL", "Status", "Notes"]
             worksheet.append_row(headers)
-            
-            # Add Status validation
-            # status_options = ["Not Applied", "Applied", "Interview", "Rejected", "Offer"]
-            # gspread doesn't have a very simple native way to add dropdowns without batch_update,
-            # but we can try to skip it for now or implement if time permits.
-            # For simplicity, we'll just set headers for now.
 
         # Prepare data for appending
         new_rows = []
@@ -220,6 +241,11 @@ def export_to_google_sheets(df: pd.DataFrame, config: dict):
             curr = row.get('currency', 'USD')
             salary_str = f"{min_sal:,} - {max_sal:,} {curr}" if pd.notnull(min_sal) and pd.notnull(max_sal) else "N/A"
 
+            # Join list values if they exist
+            matched_skills = row.get('matched_skills', 'N/A')
+            if isinstance(matched_skills, list):
+                matched_skills = ", ".join(matched_skills)
+
             row_data = [
                 current_date,
                 row.get('title', 'N/A'),
@@ -227,7 +253,7 @@ def export_to_google_sheets(df: pd.DataFrame, config: dict):
                 row.get('location', 'N/A'),
                 salary_str,
                 row.get('job_type', 'N/A'),
-                row.get('matched_skills', 'N/A'),
+                matched_skills,
                 row.get('ai_match_score', 0),
                 row.get('ai_match_reason', 'N/A'),
                 job_url,
@@ -242,6 +268,8 @@ def export_to_google_sheets(df: pd.DataFrame, config: dict):
                 try:
                     worksheet.append_rows(new_rows)
                     logger.info(f"Appended {len(new_rows)} new jobs to Google Sheets.")
+                    status["success"] = True
+                    status["count"] = len(new_rows)
                     break
                 except Exception as e:
                     if attempt == 0:
@@ -249,14 +277,19 @@ def export_to_google_sheets(df: pd.DataFrame, config: dict):
                         time.sleep(10)
                     else:
                         logger.error(f"Google Sheets append failed after retry: {e}")
-
+            
             # Apply formatting
             update_sheet_formatting(worksheet)
         else:
             logger.info("No new jobs to add to Google Sheets (all were duplicates).")
+            status["success"] = True # Success but 0 new
+            status["count"] = 0
 
     except Exception as e:
         logger.error(f"Error in export_to_google_sheets: {e}")
+        status["success"] = False
+        
+    return status
 
 def export_to_csv(df: pd.DataFrame, output_dir: str = "output") -> str:
     """
@@ -387,7 +420,7 @@ def display_terminal_summary(df: pd.DataFrame, top_n: int = 5):
     print("+" + "-"*4 + "+" + "-"*7 + "+" + "-"*26 + "+" + "-"*16 + "+" + "-"*30 + "+")
     print(f"{divider}\n")
 
-def generate_run_summary(total_scraped: int, total_filtered: int, total_new: int, run_time_seconds: float, ai_stats: Optional[Dict[str, Any]] = None) -> str:
+def generate_run_summary(total_scraped: int, total_filtered: int, total_new: int, run_time_seconds: float, ai_stats: Optional[Dict[str, Any]] = None, gsheets_status: Optional[Dict[str, Any]] = None) -> str:
     """
     Returns a formatted box summary string for reporting.
     """
@@ -418,7 +451,17 @@ Avg Score:      {ai_stats.get('avg_score')}%
 {sep}
 """
 
-    summary += f"""Run Time:       {run_time_seconds:.1f} seconds
+    # Export Status (New in Phase 4.2)
+    csv_status = "[OK] CSV saved" if total_new > 0 else "[--] No new CSV"
+    gs_status_text = "[OK] Google Sheets updated" if gsheets_status and gsheets_status.get("success") else ("[--] Google Sheets skipped" if not gsheets_status else "[!!] Google Sheets failed")
+    
+    summary += f"""Export:         {csv_status} | {gs_status_text}
+"""
+    if gsheets_status and gsheets_status.get("url"):
+        summary += f"Sheet URL:      {gsheets_status.get('url')}\n"
+    
+    summary += f"""{sep}
+Run Time:       {run_time_seconds:.1f} seconds
 {divider}
 """
     return summary.strip()

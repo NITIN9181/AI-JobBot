@@ -10,3 +10,5 @@ gspread
 oauth2client
 python-telegram-bot
 secure-smtplib
+feedparser>=6.0.0
+ 

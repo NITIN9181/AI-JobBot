@@ -86,3 +86,78 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345678")
     monkeypatch.setenv("GOOGLE_SHEETS_CRED_FILE", "mock_creds.json")
     monkeypatch.setenv("GOOGLE_SHEET_NAME", "MockSheet")
+
+
+@pytest.fixture
+def sample_india_jobs():
+    """Sample AI/ML/SDE job data for India filter testing."""
+    return pd.DataFrame([
+        {
+            "title": "Junior ML Engineer",
+            "company": "TCS",
+            "location": "Remote - India",
+            "description": (
+                "Entry level Machine Learning role for fresh graduates. "
+                "Python, TensorFlow, PyTorch."
+            ),
+        },
+        {
+            "title": "Senior AI Research Scientist",
+            "company": "Google DeepMind",
+            "location": "US Only",
+            "description": (
+                "5+ years of deep learning research. PhD required. "
+                "US citizenship required."
+            ),
+        },
+        {
+            "title": "Data Scientist",
+            "company": "Flipkart",
+            "location": "Remote - APAC",
+            "description": (
+                "Looking for data scientist. 0-2 years experience. "
+                "Python, SQL, scikit-learn."
+            ),
+        },
+        {
+            "title": "Lead MLOps Architect",
+            "company": "Amazon",
+            "location": "Remote",
+            "description": (
+                "Minimum 8 years in ML infrastructure. "
+                "Must reside in the United States. AWS SageMaker."
+            ),
+        },
+        {
+            "title": "SDE - AI Platform",
+            "company": "Zoho",
+            "location": "Worldwide",
+            "description": (
+                "Software Development Engineer for our AI platform. "
+                "Python, Docker, Kubernetes."
+            ),
+        },
+    ])
+
+
+@pytest.fixture
+def mock_nvidia_client():
+    """Mock OpenAI client configured for NVIDIA API testing."""
+    mock_client = MagicMock()
+
+    # Default: return a valid-looking completion response
+    valid_response_content = (
+        '{"is_legitimate": true, "legitimacy_reason": "Real job", '
+        '"india_eligible": true, "india_reason": "Open to India", '
+        '"fresher_friendly": true, "fresher_reason": "Entry level ok", '
+        '"estimated_experience_years": 0, "confidence": 85, '
+        '"red_flags": [], "company_type": "enterprise"}'
+    )
+    mock_choice = MagicMock()
+    mock_choice.message.content = valid_response_content
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+
+    mock_client.chat.completions.create.return_value = mock_response
+    return mock_client

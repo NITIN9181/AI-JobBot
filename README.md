@@ -52,6 +52,11 @@
 | `hours_old` | Only fetch jobs posted in the last N hours. | `24` |
 | `blacklisted_companies` | Skip these annoying companies. | `["Revature", "CyberCoders"]` |
 | `ai_scoring` | Enable/Disable AI matching engine. | `enabled: true` |
+| `target_country` | Filter jobs for a specific country. `"any"` disables the filter. | `"India"` |
+| `experience.level` | Target experience level. `"any"` disables fresher filtering. | `"fresher"` |
+| `experience.max_years` | Maximum years of experience to allow. | `1` |
+| `extended_sources.enabled` | Enable/Disable scraping of remote-first platforms. | `true` |
+| `verification.enabled` | Enable/Disable AI-powered job legitimacy verification. | `true` |
 
 ---
 
@@ -90,6 +95,10 @@
 *   `python main.py --stats` : Pulls live stats from your Google Sheet (Total Found vs. High Match).
 *   `python main.py --test` : Quickly test the pipeline with only 5 results (saves API credits).
 *   `python main.py --no-ai`: Skip the AI scoring step to run faster.
+*   `python main.py --sources` : See all available data sources and their status.
+*   `python main.py --now --extended-only` : Only search remote-first platforms (skip Indeed/LinkedIn).
+*   `python main.py --now --no-verify` : Skip AI verification (faster, less API usage).
+*   `python main.py --now --no-extended` : Traditional mode — standard job boards only.
 
 ---
 
@@ -129,17 +138,44 @@ Go to your forked repository's **Settings > Secrets and variables > Actions** an
 ### 🏗️ Architecture
 
 ```text
-    [ Job Boards ] --> ( Scraper ) --> [ Raw Data (CSV) ]
-                             |
-                   ( Filter Engine ) --> [ Matching Jobs ]
-                             |
-                    ( AI Scorer ) ----> ( Nvidia API )
-                             |
-           +-----------------+-----------------+
-           |                 |                 |
-    ( Notifier )      ( Exporter )      ( Google Sheets )
-    [ Email/TG ]    [ latest_jobs.csv ]   [ Tracker App ]
+    [ Job Boards ]         [ RemoteOK, Himalayas, Jobicy, WWR ]
+          |                              |
+          +---------( Merge )------------+
+                          |
+                ( India Filter ) --> [ India-eligible jobs ]
+                          |
+                ( Fresher Filter ) --> [ Fresher-friendly jobs ]
+                          |
+                ( Standard Filters ) --> [ Skill-matched jobs ]
+                          |
+                ( AI Verifier ) -----> ( NVIDIA API )
+                          |
+                ( AI Scorer ) --------> ( NVIDIA API )
+                          |
+           +--------------+--------------+
+           |              |              |
+    ( Notifier )    ( Exporter )   ( Google Sheets )
 ```
+
+---
+
+### 🌍 Internet-Wide Job Discovery
+
+JobBot doesn't just search standard job boards — it scans the **entire remote job ecosystem**:
+
+| Source | Type | India Support |
+| :--- | :--- | :--- |
+| Indeed, LinkedIn, Google, etc. | Standard Boards | ✅ Via country filter |
+| RemoteOK | Remote-first platform | ✅ Post-filtered |
+| Himalayas | Remote job API | ✅ Native country=India |
+| Jobicy | Remote job API | ✅ Post-filtered |
+| WeWorkRemotely | RSS feed | ✅ Post-filtered |
+
+Every job is then:
+1. 🇮🇳 **India-filtered** — Only jobs available to Indian applicants
+2. 🎓 **Fresher-filtered** — Only entry-level / <1 year experience
+3. 🛡️ **AI-verified** — Checked for legitimacy, eligibility, and experience fit
+4. 🎯 **AI-scored** — Ranked by how well you match (0-100%)
 
 ---
 

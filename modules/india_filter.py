@@ -219,16 +219,22 @@ def apply_india_fresher_filters(df: pd.DataFrame, config: dict) -> pd.DataFrame:
 
     # 4. Sort Remaining
     if not df.empty:
-        # Sort fresher-friendly first, then by date (if available)
-        sort_cols = ['fresher_friendly']
-        ascending = [False]
-        
+        # Build sort key list dynamically — only include columns that exist.
+        # fresher_friendly is absent when the fresher filter was skipped (level='any').
+        sort_cols = []
+        ascending = []
+
+        if 'fresher_friendly' in df.columns:
+            sort_cols.append('fresher_friendly')
+            ascending.append(False)
+
         if 'date_posted' in df.columns:
             df['date_posted'] = pd.to_datetime(df['date_posted'], errors='coerce')
             sort_cols.append('date_posted')
             ascending.append(False)
-            
-        df = df.sort_values(by=sort_cols, ascending=ascending)
+
+        if sort_cols:
+            df = df.sort_values(by=sort_cols, ascending=ascending)
 
     removed = input_count - len(df)
     logger.info(f"India+Fresher Filter: {input_count} → {len(df)} jobs ({removed} removed)")

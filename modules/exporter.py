@@ -72,34 +72,322 @@ def check_sheet_duplicates(worksheet, job_url: str) -> bool:
         logger.error(f"Error checking duplicates in sheet: {e}")
         raise
 
+def _clear_existing_rules(worksheet, sheet_id):
+    """Clears conditional format rules and banding to prevent duplicates on re-runs."""
+    try:
+        metadata = worksheet.spreadsheet.fetch_sheet_metadata()
+        target_sheet = None
+        for sheet in metadata.get('sheets', []):
+            if sheet.get('properties', {}).get('sheetId') == sheet_id:
+                target_sheet = sheet
+                break
+        if not target_sheet:
+            return
+
+        delete_requests = []
+
+        # Delete conditional format rules in reverse order (keeps indices valid)
+        cond_rules = target_sheet.get('conditionalFormats', [])
+        for i in range(len(cond_rules) - 1, -1, -1):
+            delete_requests.append(
+                {"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": i}}
+            )
+
+        # Delete banded ranges
+        for band in target_sheet.get('bandedRanges', []):
+            delete_requests.append(
+                {"deleteBanding": {"bandedRangeId": band['bandedRangeId']}}
+            )
+
+        if delete_requests:
+            worksheet.spreadsheet.batch_update({"requests": delete_requests})
+            logger.debug(f"Cleared {len(delete_requests)} existing formatting rules.")
+    except Exception as e:
+        logger.debug(f"Could not clear existing formatting (may be first run): {e}")
+
+
 @retry(max_attempts=3, delay=5)
 def update_sheet_formatting(worksheet):
-    """Applies conditional formatting and freezes headers."""
+    """Applies comprehensive premium formatting to the Google Sheet.
+
+    Formatting includes:
+    - Dark header row with white bold text (frozen)
+    - Optimized column widths for each data type
+    - AI Score color coding: Green (>=80), Yellow (60-79), Red (<60), Gray (0)
+    - Status column color coding with dropdown validation
+    - URL column styled as clickable links
+    - Alternating row colors (banded rows) for easy scanning
+    - AI Reason column text wrapping
+    - Notes column highlighted as user-editable
+    """
     try:
-        # Format Header (Row 1): Bold, Background Color
+        sheet_id = worksheet.id
+
+        # ── Step 0: Clear existing rules to keep formatting idempotent ──
+        _clear_existing_rules(worksheet, sheet_id)
+
+        # ── Step 1: Header row — dark navy, white bold text, frozen ──
         worksheet.format("A1:L1", {
-            "backgroundColor": {"red": 0.8, "green": 0.8, "blue": 0.8},
-            "textFormat": {"bold": True}
+            "backgroundColor": {"red": 0.13, "green": 0.17, "blue": 0.31},
+            "textFormat": {
+                "bold": True,
+                "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                "fontSize": 11
+            },
+            "horizontalAlignment": "CENTER",
+            "verticalAlignment": "MIDDLE",
         })
         worksheet.freeze(rows=1)
-        
-        # Add conditional formatting for AI Score (Col 8)
-        requests = [
-            {
+
+        # ── Step 2: Build all batch requests ──
+        requests = []
+
+        # --- Column widths (pixels) ---
+        #       A     B     C     D     E     F     G     H    I     J     K     L
+        col_widths = [110, 260, 170, 170, 130, 110, 220, 85, 320, 280, 120, 200]
+        for i, width in enumerate(col_widths):
+            requests.append({
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                              "startIndex": i, "endIndex": i + 1},
+                    "properties": {"pixelSize": width},
+                    "fields": "pixelSize"
+                }
+            })
+
+        # --- Header row height ---
+        requests.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                          "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 40},
+                "fields": "pixelSize"
+            }
+        })
+
+        # --- Date column (A): Center aligned ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 0, "endColumnIndex": 1},
+                "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat.horizontalAlignment"
+            }
+        })
+
+        # --- Job Type column (F): Center aligned ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 5, "endColumnIndex": 6},
+                "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat.horizontalAlignment"
+            }
+        })
+
+        # --- AI Score column (H): Center + Bold + larger font ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 7, "endColumnIndex": 8},
+                "cell": {"userEnteredFormat": {
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {"bold": True, "fontSize": 12}
+                }},
+                "fields": "userEnteredFormat(horizontalAlignment,textFormat)"
+            }
+        })
+
+        # --- AI Reason column (I): Text wrap for long explanations ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 8, "endColumnIndex": 9},
+                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+                "fields": "userEnteredFormat.wrapStrategy"
+            }
+        })
+
+        # --- Job URL column (J): Blue underlined text (link style) ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 9, "endColumnIndex": 10},
+                "cell": {"userEnteredFormat": {"textFormat": {
+                    "foregroundColor": {"red": 0.06, "green": 0.33, "blue": 0.80},
+                    "underline": True
+                }}},
+                "fields": "userEnteredFormat.textFormat"
+            }
+        })
+
+        # --- Status column (K): Center aligned ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 10, "endColumnIndex": 11},
+                "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat.horizontalAlignment"
+            }
+        })
+
+        # --- Notes column (L): Light cream background (user-editable hint) ---
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 11, "endColumnIndex": 12},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": {"red": 1.0, "green": 0.98, "blue": 0.88}
+                }},
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        })
+
+        # ── Conditional Formatting: AI Score (Column H) ──
+
+        # Gray: exactly 0 (not scored / AI disabled)
+        requests.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                                "startColumnIndex": 7, "endColumnIndex": 8}],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_EQ",
+                                      "values": [{"userEnteredValue": "0"}]},
+                        "format": {
+                            "backgroundColor": {"red": 0.90, "green": 0.90, "blue": 0.90},
+                            "textFormat": {"foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6}}
+                        }
+                    }
+                },
+                "index": 0
+            }
+        })
+
+        # Green: >= 80 (great match)
+        requests.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                                "startColumnIndex": 7, "endColumnIndex": 8}],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_GREATER_THAN_EQ",
+                                      "values": [{"userEnteredValue": "80"}]},
+                        "format": {"backgroundColor": {"red": 0.72, "green": 0.91, "blue": 0.72}}
+                    }
+                },
+                "index": 1
+            }
+        })
+
+        # Yellow: 60-79 (decent match)
+        requests.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                                "startColumnIndex": 7, "endColumnIndex": 8}],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_BETWEEN",
+                                      "values": [{"userEnteredValue": "60"},
+                                                  {"userEnteredValue": "79"}]},
+                        "format": {"backgroundColor": {"red": 1.0, "green": 0.93, "blue": 0.65}}
+                    }
+                },
+                "index": 2
+            }
+        })
+
+        # Red: < 60 (weak match)
+        requests.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                                "startColumnIndex": 7, "endColumnIndex": 8}],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_LESS",
+                                      "values": [{"userEnteredValue": "60"}]},
+                        "format": {"backgroundColor": {"red": 0.96, "green": 0.78, "blue": 0.78}}
+                    }
+                },
+                "index": 3
+            }
+        })
+
+        # ── Conditional Formatting: Status (Column K) ──
+        status_colors = [
+            ("Not Applied", {"red": 0.88, "green": 0.88, "blue": 0.88}),    # Gray
+            ("Applied",     {"red": 0.71, "green": 0.84, "blue": 0.96}),    # Blue
+            ("Interview",   {"red": 0.72, "green": 0.91, "blue": 0.72}),    # Green
+            ("Rejected",    {"red": 0.96, "green": 0.78, "blue": 0.78}),    # Red
+            ("Offer",       {"red": 1.0,  "green": 0.87, "blue": 0.40}),    # Gold
+        ]
+        for idx, (status_text, bg_color) in enumerate(status_colors):
+            requests.append({
                 "addConditionalFormatRule": {
                     "rule": {
-                        "ranges": [{"sheetId": worksheet.id, "startRowIndex": 1, "endRowIndex": 1000, "startColumnIndex": 7, "endColumnIndex": 8}],
+                        "ranges": [{"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                                    "startColumnIndex": 10, "endColumnIndex": 11}],
                         "booleanRule": {
-                            "condition": {"type": "NUMBER_GREATER_EQUAL", "values": [{"userEnteredValue": "80"}]},
-                            "format": {"backgroundColor": {"red": 0.7, "green": 0.9, "blue": 0.7}} # Green
+                            "condition": {"type": "TEXT_EQ",
+                                          "values": [{"userEnteredValue": status_text}]},
+                            "format": {"backgroundColor": bg_color, "textFormat": {"bold": True}}
                         }
                     },
-                    "index": 0
+                    "index": 4 + idx
+                }
+            })
+
+        # ── Data Validation: Status dropdown (Column K) ──
+        requests.append({
+            "setDataValidation": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                          "startColumnIndex": 10, "endColumnIndex": 11},
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": [
+                            {"userEnteredValue": "Not Applied"},
+                            {"userEnteredValue": "Applied"},
+                            {"userEnteredValue": "Interview"},
+                            {"userEnteredValue": "Rejected"},
+                            {"userEnteredValue": "Offer"},
+                        ]
+                    },
+                    "showCustomUi": True,
+                    "strict": False
                 }
             }
-        ]
+        })
+
+        # ── Banded rows for easy scanning (auto-filled columns A-J) ──
+        requests.append({
+            "addBanding": {
+                "bandedRange": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+                              "startColumnIndex": 0, "endColumnIndex": 10},
+                    "rowProperties": {
+                        "firstBandColor":  {"red": 1.0,  "green": 1.0,  "blue": 1.0},
+                        "secondBandColor": {"red": 0.94, "green": 0.95, "blue": 0.97}
+                    }
+                }
+            }
+        })
+
+        # ── Tab color (green accent) ──
+        requests.append({
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "tabColor": {"red": 0.20, "green": 0.66, "blue": 0.33}
+                },
+                "fields": "tabColor"
+            }
+        })
+
+        # ── Execute all formatting in one batch ──
         worksheet.spreadsheet.batch_update({"requests": requests})
-        logger.info("Applied formatting to Google Sheet.")
+        logger.info("Applied premium formatting to Google Sheet.")
+
     except Exception as e:
         logger.warning(f"Could not apply formatting: {e}")
         raise
@@ -150,13 +438,17 @@ def export_to_google_sheets(df: pd.DataFrame, config: dict) -> Dict[str, Any]:
     
     status["url"] = spreadsheet.url
     try:
-        # Ensure headers
-        existing_values = worksheet.get_all_values()
-        if not existing_values:
-            headers = ["Date Found", "Title", "Company", "Location", "Salary Range", "Job Type", "Skills Matched", "AI Score", "AI Reason", "Job URL", "Status", "Notes"]
-            worksheet.append_row(headers)
-
-        existing_urls = worksheet.col_values(10)
+        # Ensure headers - more robust check
+        first_row = worksheet.row_values(1)
+        expected_headers = ["Date Found", "Title", "Company", "Location", "Salary Range", "Job Type", "Skills Matched", "AI Score", "AI Reason", "Job URL", "Status", "Notes"]
+        
+        if not first_row or first_row[0] != "Date Found":
+            logger.info("Headers missing or incorrect. Inserting at the top.")
+            worksheet.insert_row(expected_headers, index=1)
+            # Re-fetch values if we inserted
+            existing_urls = worksheet.col_values(10)
+        else:
+            existing_urls = worksheet.col_values(10)
         new_rows = []
         current_date = datetime.now().strftime("%Y-%m-%d")
 
